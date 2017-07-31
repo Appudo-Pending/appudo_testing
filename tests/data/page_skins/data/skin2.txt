@@ -1,0 +1,5 @@
+</head><!-- ###MAIN### START -->
+This is skin2
+<!-- ###LINK### START --><a href="###HREF###">?skin2?###TEXT###?skin2?</a><br/><!-- ###LINK### END -->
+skin2 end
+<!-- ###MAIN### END -->

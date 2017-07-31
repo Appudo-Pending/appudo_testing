@@ -1,0 +1,122 @@
+<!--
+    index.html is part of Appudo
+
+    Copyright (C) 2011-2016
+        00bd5bdef476a7cd2138cc18cb0274bf9dac8503cf7f406bcdff73381391c976 source@appudo.com
+        31e58341d31d3a196ed6502a68b4f87115456459d60f5a1d70c00779266aec60 source@appudo.com
+
+    Licensed under the Apache License, Version 2.0
+
+    See http://www.appudo.com/LICENSE.txt for more information
+-->
+
+<html>
+<head>
+    <style>
+    </style>
+    <script type="text/javascript">
+    function to64(data) {
+        return btoa(String.fromCharCode.apply(null, data));
+    }
+
+    function beginWait()
+    {
+        theWait = false;
+        setTimeout(function(){ theWait = true }, 0);
+    }
+
+    function endWait()
+    {
+        return theWait;
+    }
+
+    function getLine()
+    {
+        return theDoc.editor.getSelectionRange().start.row;
+    }
+
+    function getColumn()
+    {
+        return theDoc.editor.getSelectionRange().start.col;
+    }
+
+    function gotoLine(l)
+    {
+        theDoc.editor.gotoLine(l+1, 0, true);
+    }
+
+    function gotoColumn(c)
+    {
+        var line = theDoc.editor.getSelectionRange().start.row;
+        theDoc.editor.gotoLine(line, c, true);
+    }
+    
+    function setFocus()
+    {
+        return theDoc.focus();
+    }
+    
+    function setText(text)
+    { 
+        theDoc.setText(text);
+        return true;
+    }
+    
+    function getText()
+    {
+        return theDoc.getText();
+    }
+    
+    function isChanged()
+    {
+        return theDoc.changed();
+    }
+    
+    function getDiff()
+    {
+        var diff = document.getElementById('diff');
+        return diff.value;
+    }
+    
+    function startup() {
+        theDoc = { setText:function() { throw "setText not defined yet"; },
+                   onFocus:function() {},
+                   onBlur:function() {},
+                   getText:function() {},
+                   focus:function() {},
+                   getText:function() {},
+                   changed:function() {},
+                   editor:{ gotoLine:function() {},
+                            getSelectionRange:function() { return {start:{}}}} };
+        var diff = document.getElementById('diff');
+        var frm = document.getElementById('frame');
+        frm.src = "./editjs.html";
+        frm.onload = function() {
+            var doc = frm.contentWindow.document;
+            var ctx = doc.init();
+            theDoc = doc;
+            doc.unblock();
+            doc.show();
+            ctx.onFocus = function() {}
+            ctx.onBlur = function() {}
+            ctx.textChanged = function() { console.log("text changed") }
+            ctx.fullUndo = function() { }
+            ctx.save = function() {
+                diff.value = to64(doc.getDiff().getResult());
+                doc.textSaved();
+            }
+            doc.setText("");
+        }
+    }
+    </script>
+</head>
+<body onLoad="startup();">
+       <iframe class="bframe" id="frame"></iframe>
+       <div>
+       <br>
+       <br>
+       <textarea id="diff" cols="35" rows="20">
+       </textarea>
+       </div>
+</body>
+</html>

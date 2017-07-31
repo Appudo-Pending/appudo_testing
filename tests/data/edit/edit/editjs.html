@@ -1,0 +1,1658 @@
+<!--
+    editjs.html is part of Appudo
+
+    Copyright (C) 2011-2016
+        31e58341d31d3a196ed6502a68b4f87115456459d60f5a1d70c00779266aec60 source@appudo.com
+        00bd5bdef476a7cd2138cc18cb0274bf9dac8503cf7f406bcdff73381391c976 source@appudo.com
+
+    Licensed under the Apache License, Version 2.0
+
+    See http://www.appudo.com/LICENSE.txt for more information
+-->
+<html>
+<head>
+<script type="text/javascript" src="./ace/build/src/ace.js">
+</script>
+<script type="text/javascript" src="./ace/build/src/mode-javascript.js">
+</script>
+<style>
+	html, body { 
+		position:absolute;
+		left:0;
+		right:0;
+		top:0;
+		bottom:0;
+		padding:0; 
+		margin:0; 
+		border:0; 
+		overflow:hidden;	
+	} 
+	body { 
+   		visibility:hidden;
+	}	
+	#editor { 
+		position:absolute;
+		left:0;
+		right:0;
+		top:-12px;
+		bottom:-12px;
+		background-color:#EEE;
+   	}   		   		
+	.ace_scroller { 
+   		overflow-x:auto !important;
+   	}
+   	.ace_scrollbar { 
+   		overflow-y:auto !important;
+   		z-index:999;
+   	}	   	
+   	.ace_gutter { 
+   		background-color:#EFEFEF !important;
+   	}	
+</style>
+	<script type="text/javascript">
+	function startup() {
+		if(!window.console)
+			window.console = {log:function(txt){}};
+			
+		var ctx = {};
+                var editor = ace.edit('editor');
+		var session = editor.getSession();
+		var blocked = false;
+		editor.setTheme('ace/theme/dawn');
+		
+		document.renderer = editor.renderer;
+                document.editor = editor;
+		document.init = function(m) {
+			if(!document.setMode(m))
+				return;
+			return ctx;
+		}
+
+		document.hide = function() { 
+			document.body.style.visibility = 'hidden';
+		}
+		
+		document.show = function() { 
+			document.body.style.visibility = 'visible';
+		}
+		
+		document.block = function() {
+			console.log("block");
+			blocked = true;
+			editor.setReadOnly(true);
+		}
+
+		document.unblock = function() { 
+			console.log("unblock");
+			blocked = false;
+			editor.setReadOnly(false);
+		}
+		
+		document.setOption = function(k, v) {
+			editor.setOption(k, v);
+		}
+		
+                document.setMode = function(m) {
+			if(!m) {
+				var TextMode = require("ace/mode/text").Mode;
+				session.setMode(new TextMode());
+				return true;
+			}
+			var md = require(m);
+			if(!md || !md.Mode)
+				return false;
+			var mode = md.Mode;
+			session.setMode(new mode());
+			return true;
+		}
+		
+		document.truncLine = function(num) {
+			var doc = session.getDocument();
+			var len = session.getLength();
+			if(len > num)
+				doc.removeLines(0, len-num);
+		}
+		
+		document.appendLines = function(txt) {
+			editor.navigateFileEnd();
+			editor.insert(txt);
+		}
+		
+		if(document.plain) {
+		
+			document.setText = function(txt) { 
+				session.setValue(txt);
+			}
+		
+			if(document.go) {
+				document.go();
+				document.go = null;
+			}
+			document.loaded = true;
+			return;
+		} 
+		
+		var started = false;
+		var changed = false;
+		var undo = false;
+		var hiddenPoint = null;
+		var oldLines = null;
+		var lastDiff = '';
+		var hiddenStack = [];
+		var hidden = false;
+		var savePoint = null;
+
+		var um = session.getUndoManager();
+
+		var ip = editor.textInput;
+		var f = ip.focus;
+		ip.focus = function(e) {
+			ctx.onFocus(document);
+			f(e);
+		}
+		var b = ip.blur;
+		ip.blur = function(e) {
+			ctx.onBlur(document);
+			b(e);
+		}
+		
+		editor.textInput.onContextMenu = function(e) {
+	    	if(e.stopPropagation)
+	    		e.stopPropagation();
+	    	e.cancelBubble = true;
+	    	if(e.preventDefault)
+	    		e.preventDefault();
+	    	return false;
+		};
+		
+		um.constructor.prototype.execute = function(options) {
+	        var deltas = options.args[0];
+	        this.$doc  = options.args[1];
+	        if(hidden) {
+		        hidden = false;
+		        if(hiddenStack.length != 0) {
+			        hiddenPoint = this.$undoStack[this.$undoStack.length -1];
+			    }
+		    }
+	        this.$undoStack.push(deltas);
+	        if(this.$redoStack.length != 0)
+	        	this.$redoStack = [];
+	    };
+	    
+	    um.constructor.prototype.undo = function(dontSelect) {
+	        var deltas = this.$undoStack.pop();
+	        var undoSelectionRange = null;
+	        if(deltas) {
+	        	if(deltas == hiddenPoint)
+	    			hidden = true;
+	        	if(hidden)
+	        		hiddenStack.push(deltas);
+	            undoSelectionRange =
+	                this.$doc.undoChanges(deltas, dontSelect);
+	            this.$redoStack.push(deltas);
+	        }
+	        return undoSelectionRange;
+	    };
+	    
+	    um.constructor.prototype.redo = function(dontSelect) {
+	        var deltas = this.$redoStack.pop();
+	        var redoSelectionRange = null;
+	        if(deltas) {
+	        	if(deltas == hiddenPoint)
+	    			hidden = false;
+	        	if(hidden)
+	        		hiddenStack.pop();
+	            redoSelectionRange =
+	                this.$doc.redoChanges(deltas, dontSelect);
+	            this.$undoStack.push(deltas);
+	        }
+	        return redoSelectionRange;
+	    };
+	    
+		var Buffer = function() {
+				this._data = null;
+				this._dataSize = 0;
+				this._dataPos = 0;
+				this._tmp = new Uint8Array(new ArrayBuffer(10));
+			
+				this.size = function() {
+					return this._dataPos;
+				}
+	
+				this.addData = function(size) {
+					if(this._dataPos + size >= this._dataSize)
+					{
+						var newSize = this._dataSize + (((size >> 10) << 10) + 1024);
+						var newData = new Uint8Array(new ArrayBuffer(newSize));
+						if(this._data != null)
+							newData.set(this._data);
+						this._data = newData;
+						this._dataSize = newSize;
+					}
+					this._dataPos += size;
+				}
+	
+				this.writeUint8 = function(data) {
+					var buf = this._tmp;
+					buf[0] = data
+					this.write(buf, 1);
+				}
+	
+				this.calcLen = function(data) {
+					var bufi = 10;
+	
+					/* This loop performs division and turns on all MSBs. */
+					do
+					{
+						--bufi;
+						var c = data >> 7;
+						data = c;
+					}
+					while (data != 0);
+					return 10 - bufi;
+				}
+	
+				this.writeString = function(str) {
+					var pos = this._dataPos;
+					for(var i = 0; i < str.length; i++)
+					{
+						var c = str.charCodeAt(i);
+						if (c <= 0x7F) {
+							this.addData(1);
+							this._data[pos++] = c;
+						} else if(c <= 0x7FF) {
+							this.addData(2);
+						 	this._data[pos++] = 0xC0 | ((c >> 6) & 0x1F);
+						 	this._data[pos++] = 0x80 | (c & 0x3F);
+						} else {
+							this.addData(3);
+						 	this._data[pos++] = 0xE0 | ((c >> 12) & 0x0F);
+							this._data[pos++] = 0x80 | ((c >> 6) & 0x3F);
+						 	this._data[pos++] = 0x80 | (c & 0x3F);
+						}
+					}
+				}
+	
+				this.writeInt = function(data) {
+					var buf = this._tmp;
+					var bufi = 10;
+	
+					/* This loop performs division and turns on all MSBs. */
+					do
+					{
+						buf[--bufi] = (data & 127) | 128;
+						var c = data >> 7;
+						data = c;
+					}
+					while (data != 0);
+	
+					/* Turn off MSB of the last byte. */
+					buf[9] &= 127;
+	
+					this.write(buf.subarray(bufi, 10), 10 - bufi);
+					return 10 - bufi;
+				}
+	
+				this.write = function(buffer, size) {
+					if(size == 0)
+						return;
+					var oldPos = this._dataPos;
+					this.addData(size);
+					this._data.set(buffer.subarray(0, size), oldPos);
+				}
+	
+				this.getData = function() {
+					return this._data;
+				}
+	
+				this.getResult = function() {
+					return this._data.subarray(0, this.size());
+				}
+		}
+			
+		var Breaks = function() {
+				this._insertType = 2;
+				this._firstNode = null;
+				this._currentNode = null;
+				this._currentPos = 0;
+				this._tmp = {line:0, range:0};
+				this._Node = function() {
+					this.prev = null;
+					this.next = null;
+					this.type = 0;
+					this.range = 0;
+				}	
+				this._print = function(node) {
+					if(node.type == 1)
+						return "[R, " + node.range + "]";
+					else
+					if(node.type == 2)
+						return "[N, " + node.range + "]";
+					else
+					if(node.type == 3)
+						return "[RN, " + node.range + "]";
+					else
+						return "[NONE, " + node.range + "]";
+				}		
+				this._remove = function(node) {
+					var next = node.next;
+					var prev = node.prev;
+					if(prev) 
+						prev.next = next;
+					if(next)
+						next.prev = prev;
+						
+					if(node === this._firstNode)
+						this._firstNode = next;
+				}
+				this._insertAfter = function(node, ins) {
+					var next = node.next;
+					node.next = ins;
+					ins.prev = node;
+					ins.next = next;
+					if(next)
+						next.prev = ins;
+				}
+				this._addBreak = function(type, last)
+				{
+					var c = last.item;
+					if(c == null)
+					{
+						c = new this._Node();
+						this._firstNode = c;
+						this._currentNode = c;
+						last.item = c;
+						c.type = type;
+					}
+			
+					if(c.type == type)
+					{
+						c.range++;
+					}
+					else
+					{
+						var n = new this._Node();
+						this._insertAfter(c, n);
+						n.type = type;
+						n.range++;
+						last.item = n;
+					}
+				}
+				this._nextPos = function(start, next)
+				{
+					return this._currentPos + start.range;
+			
+				}
+				this._prevPos = function(start, prev)
+				{
+					return this._currentPos - prev.range;
+				}
+				this._moveRight = function()
+				{
+					var start = this._currentNode;
+					var next = start.next;
+					if(next == null)
+						return;
+					this._currentNode = next;
+					this._currentPos = this._nextPos(start, next);
+				}
+				this._moveLeft = function()
+				{
+					var start = this._currentNode;
+					var prev = start.prev;
+					if(prev == null)
+						return;
+					this._currentNode = prev;
+					this._currentPos = this._prevPos(start, prev);
+				}
+				this._findPos = function(pos)
+				{
+					var start = this._currentNode;
+			
+					if(start != null)
+					{
+						while(pos > this._currentPos)
+						{
+							var next = start.next;
+							if(next == null)
+								return;
+							var next_pos = this._nextPos(start, next);
+							if(next_pos >= pos)
+								return;
+							start = next;
+							this._currentNode = start;
+							this._currentPos = next_pos;
+						}
+			
+						while(pos <= this._currentPos)
+						{
+							var prev = start.prev;
+							if(prev == null)
+								return;
+							var prev_pos = this._prevPos(start, prev);
+							start = prev;
+							this._currentNode = start;
+							this._currentPos = prev_pos;
+						}
+					}
+				}
+				this.clear = function()
+				{
+					var n = this._firstNode;
+					while(n != null)
+					{
+						var c = n;
+						n = n.next;
+						this._remove(c);
+					}
+					this._firstNode = null;
+					this._currentNode = null;
+					this._currentPos = 0;
+					if(!this._tmp)
+						this._tmp = {line:0, range:0};
+				}
+				this._copyNode = function(from, to)
+				{
+					to.type = from.type;
+					to.range = from.range;
+				}
+				this.copy = function(breaks)
+				{
+					this.clear();
+					var n = breaks._firstNode;
+					var last = null;
+					while(n != null)
+					{
+						var c = new this._Node();
+						this._copyNode(n, c);
+						if(last == null)
+						{
+							last = c;
+							this._firstNode = c;
+							this._currentNode = c;
+							this._currentPos = 0;
+						}
+						else
+						{
+							this._insertAfter(last, c);
+							last = c;
+						}
+			
+						n = n.next;
+					}
+				}
+				this._getSize = function(t)
+				{
+					switch(t)
+					{
+					case 1:
+					case 2:
+						return 1;
+					case 3:
+						return 2;
+					default:
+						return 0;
+					}
+				}
+				this._getData = function(t)
+				{
+					switch(t)
+					{
+					case 1:
+						return "\r";
+					case 2:
+						return "\n";
+					case 3:
+						return "\r\n";
+					default:
+						return "";
+					}
+				} 
+				this.getData = function(line)
+				{
+					return this._getData(this.getType(line));
+				} 
+				this.getType = function(line)
+				{
+					this._findPos(line);
+					var c = this._currentNode;
+					return c == null || this._currentPos + c.range < line ? 0: c.type;
+				} 
+				this.getSize = function(line)
+				{
+					return this._getSize(this.getType(line));
+				}
+				this.insertAt = function(line, range)
+				{
+					if(this._currentNode == null)
+					{
+						var a = new this._Node();
+						a.type = this._insertType;
+						a.range = range;
+						this._firstNode = a;
+						this._currentNode = a;
+						this._currentPos = 0;
+						return;
+					}
+			
+					this._findPos(line);
+					var c = this._currentNode;
+					var cp = this._currentPos;
+					if(c.type == this._insertType)
+					{
+						c.range += range;
+					}
+					else
+					{
+						/* split */
+						if(line == cp + 1)
+						{
+							var prev = c.prev;
+							if(prev && prev.type == this._insertType)
+							{
+								this._moveLeft();
+								prev.range += range;
+							}
+							else
+							{
+								var a = new this._Node();
+								a.type = c.type;
+								a.range = c.range;
+								this._insertAfter(c, a);
+								c.type = this._insertType;
+								c.range = range;
+							}
+						}
+						else
+						{
+							var front = line - cp - 1;
+							var r = c.range;
+							c.range = front;
+							var a = new this._Node();
+							a.type = this._insertType;
+							a.range = range;
+							this._insertAfter(c, a);
+							var b = new this._Node();
+							b.type = c.type;
+							b.range = r - front;
+							this._insertAfter(a, b);
+						}
+					}
+				}		
+				this._del = function(tmp)
+				{
+					var c = this._currentNode;
+					if(c == null)
+					{
+						tmp.range = 0;
+						return;
+					}
+					var startPos = this._currentPos + 1;
+					var max = c.range - tmp.line + startPos;
+			
+					max = tmp.range > max ? max : tmp.range;
+			
+					tmp.range -= max;
+			
+					/* split front */
+					if(tmp.line == startPos)
+					{
+						/* delete */
+						if(c.range == max)
+						{
+							var n = c.prev;
+							var next = c.next;
+							var res = true;
+							if(!n)
+							{
+								this._currentNode = next;
+								this._currentPos = 0;
+								res = false;
+							}
+							else
+							{
+								this._moveLeft();
+							}
+							this._remove(c);
+							return res;
+						}
+						/* split */
+						else
+						{
+							c.range -= max;
+						}
+					}
+					else
+					{
+						c.range -= max;
+					}
+					
+					if(c.next == null && tmp.range != 0) {
+						if(c.range != 1) {
+							c.range--;
+						} else {
+							if(c == this._firstNode) {
+								this._firstNode = null;
+								this._currentNode = null;
+								this._currentPos = 0;
+							} else {
+								this._moveLeft();
+								this._remove(c);
+							}
+						}
+						tmp.range = 0;
+					}
+			
+					return true;
+				}
+				this.deleteAt = function(line, range)
+				{
+					var tmp = this._tmp;
+					tmp.line = line;
+					tmp.range = range;
+					this._findPos(line);
+			
+					while(tmp.range != 0)
+					{
+						var m = this._del(tmp);
+						if(m && tmp.range != 0)
+							this._moveRight();
+					}
+				}
+				this.setup = function(txt)
+				{
+					this.clear();
+	
+	        		var match = txt.match(/\n|\r\n|\r/g);
+					var last = {item:null};
+			
+					var i = 0;
+					var len = match == null ? 0 : match.length;
+					for(; i < len; i++) {
+						var c = match[i];
+						if(c == "\r")
+						{
+							this._addBreak(1, last);
+						}
+						else
+						if(c == "\n")
+						{
+							this._addBreak(2, last);
+						}
+						else
+						{
+							this._addBreak(3, last);
+						}
+					}
+				}
+				this.printNodes = function() { 
+					console.log("print breaks:");
+					var f = true;
+					var start = this._firstNode;
+					var res = "";
+					while(start != null)
+					{
+						if(f)
+							f = false;
+						else
+							res += ", ";
+						res += this._print(start);
+						start = start.next;
+					};
+					console.log(res);
+				}
+		};
+	
+		var Diff = function() {
+			this._breaks=new Breaks();
+			this._firstNode=null;
+			this._currentNode=null;
+			this._currentPos=0;
+			this._maxPos=0;
+			this._tmp={line:0, range:0};
+			this._Node = function() {
+				this.prev = null;
+				this.next = null;
+				this.after = 0;
+				this.range = 0;
+				this.dist = 0;
+				this.altered = false;
+			}	
+			this._print = function(node) {
+				if(node.altered)
+					return "[a, " + node.after + ", " + node.range + ", " + node.dist + "]";
+				else
+					return "[n, " + node.after + ", " + node.range + ", " + node.dist + "]";
+			}
+			this._remove = function(node) {
+				var next = node.next;
+				var prev = node.prev;
+				if(prev) 
+					prev.next = next;
+				if(next)
+					next.prev = prev;
+					
+				if(node === this._firstNode)
+					this._firstNode = next;
+			}
+			this._insertBefore = function(node, ins) {
+				var prev = node.prev;
+				node.prev = ins;
+				ins.next = node;
+				ins.prev = prev;
+				if(prev)
+					prev.next = ins;
+		
+				if(node === this._firstNode)
+					this._firstNode = ins;
+			}
+			this._insertAfter = function(node, ins) {
+				var next = node.next;
+				node.next = ins;
+				ins.prev = node;
+				ins.next = next;
+				if(next)
+					next.prev = ins;
+			}
+                        this._getAction = function(a, reverse, lines) {
+				var res = -1;
+                                if(a == 'insert') {
+                                    if(lines <= 1)
+                                        res = reverse ? 3 : 0;
+                                    else
+                                        res = reverse ? 2 : 1;
+                                } else
+                                if(a == 'remove') {
+                                    if(lines <= 1)
+                                        res = reverse ? 0 : 3;
+                                    else
+                                        res = reverse ? 1 : 2;
+                                }
+				return res;
+			}
+			this._nextPos = function(start, next)
+			{
+				return this._currentPos + start.range + start.dist;
+		
+			}		
+			this._prevPos = function(start, prev)
+			{
+				return this._currentPos - prev.range - prev.dist;
+			}		
+			this._moveRight = function()
+			{
+				var start = this._currentNode;
+				var next = start.next;
+				if(next == null)
+					return;
+				this._currentNode = next;
+				this._currentPos = this._nextPos(start, next);
+			}		
+			this._moveLeft = function()
+			{
+				var start = this._currentNode;
+				var prev = start.prev;
+				if(prev == null)
+					return;
+				this._currentNode = prev;
+				this._currentPos = this._prevPos(start, prev);
+			}
+			this._peekNode = function(line) {
+				var start = this._currentNode;
+		
+				if(start != null)
+				{
+					while(line > this._currentPos)
+					{
+						var next = start.next;
+						if(next == null)
+							return;
+						var next_pos = this._nextPos(start, next);
+						if(next_pos >= line)
+							return;
+						start = next;
+						this._currentNode = start;
+						this._currentPos = next_pos;
+					}
+		
+					while(line <= this._currentPos)
+					{
+						var prev = start.prev;
+						if(prev == null)
+							return;
+						var prev_pos = this._prevPos(start, prev);
+						start = prev;
+						this._currentNode = start;
+						this._currentPos = prev_pos;
+					}
+				}
+			}
+			this._insLines = function(line, range) { 
+				this._breaks.insertAt(line, range);	
+				this._peekNode(line);
+				var c = this._currentNode;
+				var cp = this._currentPos;
+				var endPos = cp + c.range;
+				var insertPos = endPos + c.dist;
+				
+				var after = function() {
+					c.dist += range;
+				}
+		
+				/* before first */
+				if(line <= cp)
+				{
+		
+				}
+				/* hit */
+				else
+				if(line <= endPos)
+				{
+					/* split node */
+					var n = new this._Node();
+					n.type = c.type;
+					n.range = endPos - line + 1;
+					n.dist = c.dist;
+					c.dist = range;
+					c.range -= n.range;
+					n.after = c.after + c.range;
+					this._insertAfter(c, n);
+
+					if(c.range == 0)
+					{
+						var prev = c.prev;
+						if(prev)
+                                                {
+                                                    this._moveLeft();
+                                                    prev.dist += c.dist;
+                                                    this._remove(c);
+                                                    n.altered = c.altered;
+                                                    if(prev.after + prev.range != c.after)
+                                                    {
+                                                        console.log("MUH: " + prev.after + " + " + prev.range + " == " +  c.after);
+                                                        /* TODO insert to change in del */
+                                                    }
+                                                    else
+                                                    {
+
+                                                    }
+						}
+					}
+				}
+				/* insert */
+				else
+				if(line <= insertPos)
+				{
+					after();
+				} 
+				/* after last */
+				else 
+				{
+					after();				
+				}			
+			}
+			this._del = function(tmp) {	
+				var c = this._currentNode;
+				var cp = this._currentPos;
+				var endPos = cp + c.range;
+				var insertPos = endPos + c.dist;
+				
+				var _this = this; 
+				var rem = function() {
+					if(c.range == 0 && c.dist == 0)
+					{
+						var n = c.prev;
+						var next = c.next;
+						if(!n)
+						{
+							_this._currentNode = next;
+							_this._currentPos = 0;
+							_this._remove(c);
+							
+							if(!next)
+								_this.reset(0);
+								
+							return false;
+						}
+						else
+						{
+							_this._moveLeft();
+							_this._remove(c);
+						}
+					}
+					return true;
+				}
+				
+				/* before first */
+				if(tmp.line <= cp)
+				{
+				}
+				/* hit */
+				else
+				if(tmp.line <= endPos)
+				{
+					var o = tmp.range;
+					var end = tmp.line + tmp.range - 1;
+					var ov = 0;
+			
+					if(end > endPos && c.dist != 0)
+					{
+						var r = end - endPos;
+						r = r > c.dist ? c.dist : r;
+						tmp.range -= r;
+						c.dist -= r;
+					}
+			
+					if(end > insertPos)
+						ov = end - insertPos;
+			
+					/* split end */
+					if(end < endPos)
+					{
+						var r = endPos - end;
+						var n = new this._Node();
+						n.type = c.type;
+						n.range = r;
+						c.range -= r;
+						n.after = c.after + c.range;
+                                                n.dist = c.dist;
+						c.dist = 0;
+						this._insertAfter(c, n);
+					}
+			
+					var r = tmp.range - ov;
+					r = c.range > r ? r : c.range;
+					c.range -= r;
+					tmp.range -= r;
+			
+					tmp.line = insertPos + 1 - (o - tmp.range);
+			
+					return rem();
+				}
+				/* insert */
+				else
+				if(tmp.line <= insertPos)
+				{
+					var r = insertPos - tmp.line + 1;
+					var o = tmp.range;
+					tmp.range = r > tmp.range ? 0 : tmp.range - r;
+					c.dist -= (o - tmp.range);
+			
+					tmp.line = insertPos + 1 - r;
+			
+					return rem();
+				}
+				/* after last */
+				else
+				{
+					tmp.range = 0;
+				}
+			
+				return true;
+			}
+			this._delLines = function(line, range) {
+				this._breaks.deleteAt(line, range);	
+				var tmp = this._tmp;
+				tmp.line = line;
+				tmp.range = range;
+				this._peekNode(line);
+		
+				while(tmp.range != 0)
+				{
+					var m = this._del(tmp);
+					if(m && tmp.range != 0)
+						this._moveRight();
+				}
+			}
+			this._alt = function(tmp) { 
+				var c = this._currentNode;
+				var cp = this._currentPos;
+				var endPos = cp + c.range;
+				var insertPos = endPos + c.dist;
+				
+				var insert = function() {
+					var r = insertPos - tmp.line + 1;
+					var o = tmp.range;
+					tmp.range = r > tmp.range ? 0 : tmp.range - r;
+					tmp.line += (o - tmp.range);
+				}
+				
+				/* before first */
+				if(tmp.line <= cp)
+				{
+		
+				}
+				/* hit */
+				else
+				if(tmp.line <= endPos)
+				{
+					var nn = null;
+					if(!c.altered)
+					{
+						var se = tmp.line + tmp.range - 1 < endPos;
+						if(tmp.line == cp + 1)
+						{
+							c.altered = true;
+							nn = c;
+						}
+						else
+						{
+							/* split front */
+							var n = new this._Node();
+							var r = endPos - tmp.line + 1;
+							c.range -= r;
+							n.dist = c.dist;
+							c.dist = 0;
+							n.altered = true;
+							n.range = r;
+							n.after = c.after + c.range;
+		
+							this._insertAfter(c, n);
+							nn = n;
+		
+							var next = n.next;
+							if(!se && next && n.dist == 0 && next.altered && n.after + n.range == next.after)
+							{
+								n.dist = next.dist;
+								n.range += next.range;
+								this._remove(next);
+							}
+							else
+							{
+								this._moveRight();
+							}
+		
+						}
+		
+						if(se)
+						{
+							/* split end */
+							var n = new this._Node();
+							n.altered = false;
+							n.range = endPos - tmp.line - tmp.range + 1;
+							nn.range -= n.range;
+							n.after = nn.after + nn.range;
+							n.dist = nn.dist;
+							nn.dist = 0;
+							this._insertAfter(nn, n);
+							this._moveRight();
+		
+		
+							var prev = nn.prev;
+							if(prev && prev.dist == 0 && prev.altered && prev.after + prev.range == nn.after)
+							{
+								prev.range += nn.range;
+								this._remove(nn);
+							}
+							else
+							{
+								this._moveRight();
+							}
+		
+						}
+					}
+					else
+					{
+					}
+					insert();
+				}
+				/* insert */
+				else
+				if(tmp.line <= insertPos)
+				{
+					insert();
+				}
+				/* after last */
+				else
+				{
+					tmp.range = 0;
+				}
+			}
+			this._altLines = function(line, range) { 
+				var tmp = this._tmp;
+				tmp.line = line;
+				tmp.range = range;
+				this._peekNode(line);
+		
+				while(tmp.range != 0)
+				{
+					this._alt(tmp);
+					if(tmp.range != 0)
+						this._moveRight();
+				}
+			}
+		    	this._handle = function(stack, pos, len, reverse) {
+		    		for(i = pos; i < len; i++) {
+					var delta = stack[i][0];
+					var dl = delta.deltas.length;
+		            if(delta.group != 'doc') 
+		            	continue;
+                                        for(var j = 0; j < dl; j++) {
+                                                var d = delta.deltas[reverse ? dl - j - 1 : j];
+                                                var s = d.start;
+                                                var e = d.end;
+						var minC = s.column;
+						var maxC = e.column;
+                                                var minR = s.row;
+                                                var maxR = e.row;
+                                                var p = minR+1;
+                                                var ll = maxR - minR;
+                                                var action = this._getAction(d.action, reverse, ll);
+                                                console.log('delta: (' + minR + ',' + maxR + '/' + minC + ',' + maxC +  ') ' + (maxR - minR) + 'vs' + (d.lines ? d.lines.length : null));
+                                                if(action == 0) {
+                                                        if(minR != maxR) {
+                                                                console.log('ins1: ' +(maxR+1)+ ' '  +1);
+                                                                this._insLines(maxR+1, 1);
+                                                                this.printNodes();
+                                                        }
+                                                        console.log('alt1: ' +(p)+ ' '  +1);
+                                                        this._altLines(p, 1);
+						} else
+                                                if(action == 1) {
+                                                        console.log('ins2: ' +(p+1)+ ' '  +(maxR - minR));
+                                                        this._insLines(p+1, maxR - minR);
+                                                        this.printNodes();
+                                                        console.log('alt2: ' +(p)+ ' '  +1);
+                                                        this._altLines(p, 1);
+						} else
+                                                if(action == 2) {
+                                                        console.log('del3: ' +(p+1)+ ' '  +(maxR - minR));
+                                                        this._delLines(p+1, maxR - minR);
+                                                        this.printNodes();
+                                                        console.log('alt3: ' +(p)+ ' '  +1);
+                                                        this._altLines(p, 1);
+						} else
+                                                if(action == 3) {
+                                                        if(minR != maxR) {
+                                                                console.log('del4: ' +(maxR+1)+ ' '  +1);
+                                                                this._delLines(maxR+1, 1);
+                                                                this.printNodes();
+                                                        }
+                                                        console.log('alt4: ' +(p)+ ' '  +1);
+                                                        this._altLines(p, 1);
+						}
+                                                this.printNodes();
+					}
+				}
+		    }
+	
+			this._utf8length = function(str) {
+				var len = 0;
+				for(var i = 0; i < str.length; i++)
+				{
+					var c = str.charCodeAt(i);
+					if(c <= 0x7F) {
+						len += 1;
+					} else 
+					if(c <= 0x7FF) {
+						len += 2;
+					} else {
+						len += 3;
+					}
+				}
+				return len;
+			}
+			this.result = function(oldLines, newLines) {
+				var stack = um.$undoStack;
+				var len = stack.length;
+				var pos = len - 1;
+				var i;
+				var action;
+				
+				var oldBreaks = new Breaks();
+				oldBreaks.copy(this._breaks);
+	
+				if(hiddenStack.length != 0) {
+					this._handle(hiddenStack, 0, hiddenStack.length, true);
+				}
+				if(len != 0 && !hidden)  
+				{
+					if(hiddenPoint) {
+						for(; pos >= 0; pos--) {
+							if(hiddenPoint == stack[pos]) {
+								break;
+							}
+						}
+						pos++;
+					} else {
+						pos = 0;
+					}
+					this._handle(stack, pos, len, false);
+				}
+				var buffer = new Buffer();
+				
+				if(newLines == null || (newLines.length == 1 && newLines[0].length == 0)) {
+					this._breaks.clear();
+					this.reset(0);
+					return buffer;
+				}
+					
+				this._breaks.printNodes();
+				this.printNodes();
+	
+				var data = new Buffer();
+				var inst = new Buffer();
+				var addr = new Buffer();
+	
+				var s = this._firstNode;
+				var cp = 0;
+	
+				var currentPos = 0;
+				var currentLine = 0;
+				var _this = this;
+	
+				var calcLine = function(start)
+				{
+					while(currentLine < start)
+					{
+						currentPos += _this._utf8length(oldLines[currentLine++]);
+						currentPos += _this._utf8length(oldBreaks.getData(currentLine));
+					}
+				}
+				var windowSize = 0;
+	
+				calcLine(s.after);
+				var sourceStart = currentPos;
+	
+				while(s)
+				{
+					var altered = s.altered;
+	
+					if(s.range != 0)
+					{
+						if(altered)
+						{
+							// add
+							// new: cp
+							// s.range;
+							var size = 0;
+	
+							for(var i = cp; i < cp + s.range; i++)
+							{
+								var len = this._utf8length(newLines[i]);
+								size += len;
+								data.writeString(newLines[i]);
+								var t = this._breaks.getType(i + 1);
+								size += this._utf8length(this._breaks._getData(t));
+								data.writeString(this._breaks._getData(t));
+							}
+	
+							console.log("changed: newline("+(cp + 1)+"), lines("+s.range+"), size("+size+")\n");
+	
+							if(size <= 17)
+							{
+								if(size != 0)
+									inst.writeUint8(1 + size);
+							}
+							else
+							{
+								inst.writeUint8(1);
+								inst.writeInt(size);
+							}
+	
+							windowSize += size;
+						}
+						else
+						{
+							// copy
+							// old: s.after
+							// s.range;
+	
+							calcLine(s.after);
+							var start = currentPos;
+	
+							calcLine(s.after + s.range);
+							var end = currentPos - 1;
+							var size = end - start + 1;
+							console.log("copy: oldline(" + (s.after + 1) + "), lines(" + s.range + "), size(" + size + ") - "+ start +" to " + end + "\n");
+	
+							if(size >= 4 && size <= 18)
+							{
+								inst.writeUint8(20 + size - 4);
+								addr.writeInt(start - sourceStart);
+							}
+							else
+							{
+								inst.writeUint8(19);
+								inst.writeInt(size);
+								addr.writeInt(start - sourceStart);
+							}
+	
+							windowSize += size;
+						}
+					}
+	
+					if(s.dist)
+					{
+						//add
+						// new: cp + s.range
+						// s.dist;
+						var size = 0;
+	
+						var last = s.next == null;
+						var first = true;
+						for(var i = cp + s.range; i < cp + s.range + s.dist; i++)
+						{
+							var len = this._utf8length(newLines[i]);
+							var t = this._breaks._insertType;
+							size += len;
+							if(!last)
+								data.writeString(newLines[i]);
+							if(first && last) {
+								first = false;
+							} else {
+								size += this._utf8length(this._breaks._getData(t));
+								data.writeString(this._breaks._getData(t));
+							}
+							if(last)
+								data.writeString(newLines[i]);
+						}
+	
+						console.log("inserted: newline("+(cp + s.range + 1)+"), lines("+s.dist+"), size("+size+")\n");
+	
+						if(size <= 17)
+						{
+							if(size != 0)
+								inst.writeUint8(1 + size);
+						}
+						else
+						{
+							inst.writeUint8(1);
+							inst.writeInt(size);
+						}
+	
+						windowSize += size;
+					}
+	
+					cp += s.range + s.dist;
+					s = s.next;
+				}
+	
+				buffer.addData(5);	// header
+	
+				var header = buffer.getData();
+				header[0] = 0xD6;
+				header[1] = 0xC3;
+				header[2] = 0xC4;
+				header[3] = 0;
+				header[4] = 0;
+	
+				buffer.writeUint8(0x01); 			// Win_Indicator = VCD_SOURCE
+				buffer.writeInt(currentPos - sourceStart);	// source segment length
+				buffer.writeInt(sourceStart);			// source segment position
+				var l = 1;
+	
+				l += buffer.calcLen(windowSize);
+				l += buffer.calcLen(data.size());
+				l += buffer.calcLen(inst.size());
+				l += buffer.calcLen(addr.size());
+	
+				buffer.writeInt(data.size() + inst.size() + addr.size() + l);	//length of delta encoding
+				buffer.writeInt(windowSize);					//size of target window
+				buffer.writeUint8(0x0);						// Delta_Indicator
+				buffer.writeInt(data.size()); 					// length of runs section
+				buffer.writeInt(inst.size()); 					// length of instructions section
+				buffer.writeInt(addr.size()); 					// length of copy address section
+	
+				buffer.write(data.getData(), data.size());
+				buffer.write(inst.getData(), inst.size());
+				buffer.write(addr.getData(), addr.size());
+	
+				return buffer;
+			}
+			this.setupBreaks = function(txt) {
+				this._breaks.setup(txt);
+			}  
+			this.reset = function(maxPos) {  
+				console.log('reset');
+				var n = new this._Node();
+				n.altered = false;
+				n.range = maxPos;
+				this._maxPos = maxPos;
+				this._currentPos = 0;
+				this._firstNode = n;
+				this._currentNode = n;
+			}
+			this.printNodes = function() { 
+				console.log("print change:");
+				var f = true;
+				var start = this._firstNode;
+				var res = "";
+				while(start != null)
+				{
+					if(f)
+						f = false;
+					else
+						res += ", ";
+					res += this._print(start);
+					start = start.next;
+				};
+				console.log(res);
+			}
+		};
+	
+		var listDiff = new Diff();
+	
+		session.on('change', function(ev) {
+			if(!started || undo || blocked)
+				return;
+			undo = true;
+			setTimeout(function() {
+				if(savePoint == um.$undoStack[um.$undoStack.length -1]) {
+					var c = changed;
+					changed = false;
+					if(c)
+						document.fullUndo();
+				} else
+				if(!changed)
+				{
+					changed = true;
+					document.textChanged();
+				}
+				undo = false;
+			}, 200);
+		});
+		
+		document.textSaved = function() { 
+			var newLines = session.getLines(0, session.getLength());
+			oldLines = newLines;
+			listDiff.reset(session.getLength());
+			started = false;
+			savePoint = um.$undoStack[um.$undoStack.length -1];
+			hiddenPoint = savePoint;
+			started = true;
+			changed = false;
+			ctx.textChanged();
+			hiddenStack = [];
+			hidden = false;
+			document.unblock();
+		}
+		
+		document.save = function() { 
+			if(blocked || !changed)
+				return;
+			document.block();
+			var newLines = session.getLines(0, session.getLength());
+			lastDiff = listDiff.result(oldLines, newLines);
+			console.log(lastDiff)
+			ctx.save();
+		}
+		
+		document.textChanged = function() { 
+			ctx.textChanged();
+		}
+		
+		document.fullUndo = function() { 
+			ctx.fullUndo();
+		}
+		
+		document.setText = function(txt) { 
+			started = false;
+			session.setValue(txt);
+			um.reset();
+			listDiff.reset(session.getLength());
+			listDiff.setupBreaks(txt);
+			hiddenPoint = null;
+			savePoint = null;
+			started = true;
+			changed = false;
+			oldLines = session.getLines(0, session.getLength());
+			editor.scrollToLine(0, false);
+			editor.focus();
+			ctx.textChanged();
+		}
+		
+		document.getDiff = function() {
+			return lastDiff;
+		}
+		
+		document.getText = function() { 
+			return session.getValue();
+		}
+		
+		document.insertText = function(txt) { 
+			var r = editor.insert(txt);
+			editor.focus();
+			return r;
+		}
+		
+		document.selectedText = function() { 
+			var sel = session.getSelection();
+			return sel ? session.getTextRange(sel.getRange()) : null;
+		}
+		
+		document.focus = function() {
+			editor.focus();
+		}
+
+		document.hasUndo = function() {
+			return um.hasUndo();
+		}
+		
+		document.hasRedo = function() {
+			return um.hasRedo();
+		}
+		
+		document.undo = function() {
+			return um.undo();
+		}
+		
+		document.redo = function() {
+			return um.redo();
+		}
+		
+		document.copy = function() {
+		}
+		
+		document.paste = function() {
+		}
+		
+		document.cut = function() {
+		}
+		
+		document.changed = function() {
+			return changed;
+		}
+		
+		document.blocked = function() {
+			return blocked;
+		}
+		
+		document.started = function() {
+			return started;
+		}
+		
+		document.inMarker = function() {
+			var sel = session.getSelection();
+			if(!sel || sel.isMultiLine())
+				return null;
+			var range = sel.getRange();
+			if(range.start.column < 3)
+				return null;
+			range.start.column -= 3;
+			range.end.column += 3;
+			var txt = session.getTextRange(range);
+			var len = txt.length;
+			if(len < 7 || txt[0] != '#' || txt[1] != '#' || txt[2] != '#' ||
+			   txt[len-3] != '#' || txt[len-2] != '#' || txt[len-1] != '#')
+				return null;
+			range.start.column += 3;
+			range.end.column -= 3;
+			return session.getTextRange(range);
+		}
+		
+		document.findMarker = function(m) { 
+			editor.find('###'+m+'###');
+			editor.focus();
+		}
+		
+		document.findFkt = function(m) { 
+			editor.selection.clearSelection();
+                    editor.$search.set({needle:'@annotate\\(.+\\)[\\s\\n]+func[\\s\\n]+('+m+')[\\s\\n]*\\(', regExp: true});
+			var range = editor.$search.find(session);
+	        if(range) {
+	        	editor.selection.setSelectionRange(range);
+				editor.selection.selectLine();
+				editor.centerSelection();
+				editor.focus();
+			}
+		}
+
+		document.replaceAll = function(str, w) { 
+			editor.replaceAll(w, {needle:str, regExp: false});
+		}
+		
+		document.replaceNext = function(str, w, down) { 
+			document.replace(w);
+			document.findNext(str, down);
+		}
+		
+		document.findNext = function(str, down) { 
+			editor.selection.clearSelection();
+		    editor.$search.set({needle:str, regExp: false});
+			var range = editor.$search.find(session);
+	        if(range)
+	        	editor.selection.setSelectionRange(range);
+		}
+		
+		document.replace = function(w) {
+			var sel = session.getSelection();
+			if(sel) {
+				var range = sel.getRange();
+				if(range.start.row != range.end.row || range.start.column != range.end.column)
+					session.replace(sel.getRange(), w);
+			}
+		}
+		
+		editor.commands.addCommand({
+		    name: 'Save',
+		    bindKey: {
+		        win: 'Ctrl-S',
+		        mac: 'Command-S',
+		        sender: 'editor'
+		    },
+		    exec: document.save
+		});
+		
+		editor.commands.addCommand({
+		    name: 'Search',
+		    bindKey: {
+		        win: 'Ctrl-F',
+		        mac: 'Command-F',
+		        sender: 'editor'
+		    },
+		    exec: function(){ctx.onSearch(document.selectedText());}
+		});
+		
+		if(document.go) {
+			document.go();
+			document.go = null;
+		} 
+		document.loaded = true;
+	}
+        </script>
+</head>
+<body onLoad="startup();">
+        <pre id="editor">loading</pre>
+</body>
+</html>
